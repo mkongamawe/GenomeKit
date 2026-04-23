@@ -1,4 +1,4 @@
 from .gc_calculator import GCCalculator
-from .primer_finder import PrimerFinder
+from .primer_finder import Primer
 
-__all__ = ["GCCalculator", "PrimerFinder"]
+__all__ = ["GCCalculator", "Primer"]

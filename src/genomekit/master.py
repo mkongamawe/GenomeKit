@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from genomekit.modules.gc_calculator import GCCalculator
-from genomekit.modules.primer_finder import PrimerFinder
+from genomekit.modules.primer_finder import Primer
 
 
 class GenomeKit:
@@ -29,17 +29,17 @@ class GenomeKit:
 
         self.sequence = sequence.upper()
         self._gc = GCCalculator(self.sequence)
-        self._primer = PrimerFinder(self.sequence)
+        self._primer = Primer(self.sequence)
 
     def gc_content(self) -> dict[str, float]:
         """Return GC statistics for the sequence."""
         return self._gc.analyze()
 
-    def primer_finder(self) -> list[dict]:
+    def primer_finder(self) -> Primer.PrimerFinderResults:
         """
         Find potential forward and reverse primers.
 
         Returns:
-            A list of dictionaries with primer sequences and suitability verdicts.
+            An object of class PrimerFinderResults with primer sequences and probability verdicts.
         """
-        return self._primer.find()
+        return self._primer.find_primer()

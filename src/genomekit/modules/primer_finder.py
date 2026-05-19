@@ -1,153 +1,255 @@
 from __future__ import annotations
 
-from collections.abc import Generator, Iterator
+from collections.abc import Iterator
+from dataclasses import dataclass
+from enum import Enum
 
 
-class Primer:
+class MeltTempMethod(Enum):
+    WALLACE = "wallace"  # 4(G+C) + 2(A+T) — fast, short oligos
+    NEAREST_NEIGHBOUR = "nn"  # More accurate, longer sequences
+
+
+@dataclass(frozen=True)
+class PrimerSequence:
     """
-    Analyse primer properties from DNA sequences
+    A value object representing a single primer candidate.
+    Immutable — a primer sequence is a fact, not something that changes.
     """
 
-    def __init__(self, sequence: str) -> None:
-        if len(sequence) < 20:
-            raise ValueError("Sequence must be at least 20 bases to extract primers")
-        self.sequence = sequence.upper()
+    id: str  # e.g. "seq_001_forward"
+    sequence: str
+    source_id: str  # ID of the sequence it was derived from
+    orientation: str  # "forward" or "reverse"
 
-    @classmethod
-    def from_multiple(cls, sequences: list[str]) -> Generator[Primer, None, None]:
-        return (cls(seq) for seq in sequences)
+    def __post_init__(self):
+        invalid = set(self.sequence.upper()) - {"A", "T", "C", "G"}
+        if invalid:
+            raise ValueError(f"Invalid bases in primer: {sorted(invalid)}")
 
-    def __str__(self) -> str:
+    def __len__(self):
+        return len(self.sequence)
+
+    def __str__(self):
         return self.sequence
 
-    def __repr__(self) -> str:
-        return self.__str__()
 
-    def find_primer(self) -> Primer.PrimerFinderResults:
-        """
-        Check the first and last 20 bp of a DNA sequence for primer-like properties.
-        Utilises 3 criteria
-        1. Whether the gc content is between 40-60
-        2. Whether the sequence can form an internal dime
-        3. Whether the melting temperature is between 60-65c
+@dataclass
+class PrimerAnalysis:
+    """
+    Holds the full analysis for a single primer candidate.
+    Keeps the result coupled to its source — no orphaned results.
+    """
 
-        Returns:
-            FIXME: Update what is returned
-            A list with one dictionary containing the forward/reverse
-            primer sequences and their verdicts.
-        """
-        front_seq = self.sequence[:20]
-        back_seq = self.sequence[-20:]
+    primer: PrimerSequence
+    gc_content: float
+    melting_temp: float
+    has_hairpin: bool
+    tm_method: MeltTempMethod
 
-        front_gc = self._gc_content(front_seq)
-        back_gc = self._gc_content(back_seq)
+    @property
+    def gc_pass(self) -> bool:
+        return 40.0 <= self.gc_content <= 60.0
 
-        front_hairpin = self._find_hairpin(front_seq)
-        back_hairpin = self._find_hairpin(back_seq)
+    @property
+    def tm_pass(self) -> bool:
+        return 50.0 <= self.melting_temp <= 65.0
 
-        front_temp = self._melt_temp(front_seq)
-        back_temp = self._melt_temp(back_seq)
+    @property
+    def verdict(self) -> bool:
+        return self.gc_pass and self.tm_pass and not self.has_hairpin
 
-        front_verdict = (40 <= front_gc <= 60) and not (front_hairpin) and (60 <= front_temp <= 65)
-        back_verdict = (40 <= back_gc <= 60) and not (back_hairpin) and (60 <= back_temp <= 65)
+    def __repr__(self):
+        return (
+            f"PrimerAnalysis(id={self.primer.id!r}, "
+            f"orientation={self.primer.orientation!r}, "
+            f"gc={self.gc_content:.1f}%, "
+            f"tm={self.melting_temp:.1f}°C, "
+            f"hairpin={self.has_hairpin}, "
+            f"verdict={self.verdict})"
+        )
 
-        results = {
-            "forward_primer": front_seq,
-            "forward_verdict": front_verdict,
-            "reverse_primer": back_seq,
-            "reverse_verdict": back_verdict,
-        }
-        return self.PrimerFinderResults(results, factory=type(self))
 
-    class PrimerFinderResults:
-        """Class to store find primer results"""
+@dataclass
+class SequenceResult:
+    """
+    Pairs the forward and reverse analysis for one input sequence.
+    This is what you hand off to downstream tools.
+    """
 
-        # BUG: Can the forward and reverse primers be made objects of class DNA?
-        def __init__(self, data_dict, factory):
-            self.forward = data_dict["forward_primer"]
-            self.for_verdict = data_dict["forward_verdict"]
-            self.reverse = data_dict["reverse_primer"]
-            self.rev_verdict = data_dict["reverse_verdict"]
+    source_id: str
+    source_sequence: str
+    forward: PrimerAnalysis
+    reverse: PrimerAnalysis
 
-        def __repr__(self):
-            return (
-                f"\n{'Primer Finder Results ':=^70}\n"
-                f"Forward Primer Sequence: {self.forward} | Verdict: {self.for_verdict}\n"
-                f"Backward Primer Sequence: {self.reverse} | Verdict: {self.rev_verdict}\n"
-                f"{'=' * 70}"
+    @property
+    def full_pass(self) -> bool:
+        return self.forward.verdict and self.reverse.verdict
+
+    @property
+    def partial_pass(self) -> bool:
+        return self.forward.verdict or self.reverse.verdict
+
+
+class PrimerAnalyser:
+    """
+    Stateless analyser — takes sequences in, produces results out.
+    No state is held between calls.
+    """
+
+    def __init__(
+        self,
+        primer_length: int = 20,
+        gc_range: tuple[float, float] = (40.0, 60.0),
+        tm_range: tuple[float, float] = (50.0, 65.0),
+        tm_method: MeltTempMethod = MeltTempMethod.WALLACE,
+    ):
+        self.primer_length = primer_length
+        self.gc_range = gc_range
+        self.tm_range = tm_range
+        self.tm_method = tm_method
+
+    def analyse(self, sequence: str, source_id: str = "unknown") -> SequenceResult:
+        """Analyse a single sequence and return a fully-labelled result."""
+        sequence = sequence.upper()
+
+        if len(sequence) < self.primer_length * 2:
+            raise ValueError(
+                f"Sequence '{source_id}' is too short for primer length {self.primer_length}. "
+                f"Minimum length is {self.primer_length * 2}bp."
             )
 
-    @classmethod
-    def run_batch(cls, sequences: Iterator[Primer]) -> Iterator[Primer.PrimerFinderResults]:
+        fwd_seq = sequence[: self.primer_length]
+        rev_seq = sequence[-self.primer_length :]
+
+        forward = self._analyse_candidate(fwd_seq, source_id, "forward")
+        reverse = self._analyse_candidate(rev_seq, source_id, "reverse")
+
+        return SequenceResult(
+            source_id=source_id,
+            source_sequence=sequence,
+            forward=forward,
+            reverse=reverse,
+        )
+
+    def analyse_batch(
+        self,
+        sequences: list[str],
+        ids: list[str] | None = None,
+    ) -> Iterator[SequenceResult]:
         """
-        Accept a list of sequences provided by a user and find primers on them.
-
-        Args:
-            A list of sequences of class Primer ideally obtained using from_multiple() method
+        Lazily analyse a batch of sequences.
+        IDs default to seq_0001, seq_0002 ... if not provided.
         """
-        for seq in sequences:
-            yield seq.find_primer()
+        if ids is None:
+            ids = [f"seq_{i:04d}" for i in range(len(sequences))]
 
-    class PrimerFinderBatchResults:
-        """Class to process a stream of results and produce a summary report"""
+        if len(ids) != len(sequences):
+            raise ValueError("ids and sequences must be the same length")
 
-        # BUG: Think of how to tie the results to sequence IDs
-        def __init__(self, data_stream: Iterator[Primer.PrimerFinderResults]):
-            # Initialise the summary counters
-            self.total = 0
-            self.full_pass = 0
-            self.forward_pass = 0
-            self.reverse_pass = 0
+        for seq_id, seq in zip(ids, sequences, strict=True):
+            yield self.analyse(seq, source_id=seq_id)
 
-            # Loop through the stream
-            for result in data_stream:
-                self.total += 1
-                if result.for_verdict:
-                    self.forward_pass += 1
-                if result.rev_verdict:
-                    self.reverse_pass += 1
-                if result.for_verdict and result.rev_verdict:
-                    self.full_pass += 1
+    def _analyse_candidate(self, seq: str, source_id: str, orientation: str) -> PrimerAnalysis:
+        primer = PrimerSequence(
+            id=f"{source_id}_{orientation}",
+            sequence=seq,
+            source_id=source_id,
+            orientation=orientation,
+        )
+        return PrimerAnalysis(
+            primer=primer,
+            gc_content=self._gc_content(seq),
+            melting_temp=self._melt_temp(seq),
+            has_hairpin=self._find_hairpin(seq),
+            tm_method=self.tm_method,
+        )
 
-        def __repr__(self):
-            return (
-                f"\n{'Primer Finder Results ':=^40}\n"
-                f"Sequences processed:  {self.total}\n"
-                f"Valid full Primers:   {self.full_pass}\n"
-                f"Valid Forward Primer: {self.forward_pass}\n"
-                f"Valid Reverse Primer: {self.reverse_pass}\n"
-                f"{'=' * 40}"
-            )
+    # --- Internal calculations (stateless, could even be module-level) ---
 
     def _gc_content(self, seq: str) -> float:
-        """Return the GC content percentage of a sequence."""
-        if len(seq) == 0:
+        if not seq:
             return 0.0
         return ((seq.count("G") + seq.count("C")) / len(seq)) * 100
 
     def _melt_temp(self, seq: str) -> float:
-        if len(seq) == 0:
+        if not seq:
             return 0.0
-        return 4 * (seq.count("G") + seq.count("C")) + 2 * (seq.count("A") + seq.count("T"))
+        if self.tm_method == MeltTempMethod.WALLACE:
+            return 4 * (seq.count("G") + seq.count("C")) + 2 * (seq.count("A") + seq.count("T"))
+        raise NotImplementedError("Nearest-neighbour Tm not yet implemented")
 
     def _find_hairpin(self, seq: str) -> bool:
-        """
-        Check whether a sequence can form a hairpin
-        (complementary base pairing within the same sequence).
-
-        Args:
-            seq: The sequence to check.
-
-        Returns:
-            True if a hairpin is found, False otherwise.
-        """
         comp = {"A": "T", "T": "A", "G": "C", "C": "G"}
         for i in range(len(seq)):
-            # j starts after a minimum loop of 3; stem length is 3
             for j in range(i + 6, len(seq) - 2):
                 stem_a = seq[i : i + 3]
                 stem_b = seq[j : j + 3]
-                target = "".join(comp.get(base, "N") for base in stem_a)[::-1]
+                target = "".join(comp.get(b, "N") for b in stem_a)[::-1]
                 if target == stem_b:
                     return True
         return False
+
+
+class BatchSummary:
+    """
+    Consumes a stream of SequenceResults and builds a report.
+    Retains results for downstream filtering — nothing is thrown away.
+    """
+
+    def __init__(self, results: Iterator[SequenceResult]):
+        self._results: list[SequenceResult] = list(results)
+
+    @property
+    def total(self) -> int:
+        return len(self._results)
+
+    @property
+    def full_pass(self) -> list[SequenceResult]:
+        return [r for r in self._results if r.full_pass]
+
+    @property
+    def forward_only(self) -> list[SequenceResult]:
+        return [r for r in self._results if r.forward.verdict and not r.reverse.verdict]
+
+    @property
+    def reverse_only(self) -> list[SequenceResult]:
+        return [r for r in self._results if r.reverse.verdict and not r.forward.verdict]
+
+    @property
+    def no_pass(self) -> list[SequenceResult]:
+        return [r for r in self._results if not r.partial_pass]
+
+    def filter(
+        self,
+        require_forward: bool = False,
+        require_reverse: bool = False,
+        require_both: bool = False,
+    ) -> list[SequenceResult]:
+        """Flexible filter for downstream pipeline steps."""
+        return [
+            r
+            for r in self._results
+            if (not require_forward or r.forward.verdict)
+            and (not require_reverse or r.reverse.verdict)
+            and (not require_both or r.full_pass)
+        ]
+
+    def get_sequences(self, results: list[SequenceResult]) -> list[str]:
+        """Extract source sequences from a filtered result list."""
+        return [r.source_sequence for r in results]
+
+    def get_ids(self, results: list[SequenceResult]) -> list[str]:
+        """Extract source IDs from a filtered result list."""
+        return [r.source_id for r in results]
+
+    def __repr__(self):
+        return (
+            f"\n{'Batch Summary ':=^40}\n"
+            f"Total processed : {self.total}\n"
+            f"Full pass       : {len(self.full_pass)}\n"
+            f"Forward only    : {len(self.forward_only)}\n"
+            f"Reverse only    : {len(self.reverse_only)}\n"
+            f"No pass         : {len(self.no_pass)}\n"
+            f"{'=' * 40}"
+        )

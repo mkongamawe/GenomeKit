@@ -46,14 +46,16 @@ class PrimerAnalysis:
     melting_temp: float
     has_hairpin: bool
     tm_method: MeltTempMethod
+    gc_range: tuple[float, float]
+    tm_range: tuple[float, float]
 
     @property
     def gc_pass(self) -> bool:
-        return 40.0 <= self.gc_content <= 60.0
+        return self.gc_range[0] <= self.gc_content <= self.gc_range[1]
 
     @property
     def tm_pass(self) -> bool:
-        return 50.0 <= self.melting_temp <= 65.0
+        return self.tm_range[0] <= self.melting_temp <= self.tm_range[1]
 
     @property
     def verdict(self) -> bool:
@@ -163,6 +165,8 @@ class PrimerAnalyser:
             melting_temp=self._melt_temp(seq),
             has_hairpin=self._find_hairpin(seq),
             tm_method=self.tm_method,
+            gc_range=self.gc_range,
+            tm_range=self.tm_range,
         )
 
     # --- Internal calculations (stateless, could even be module-level) ---
@@ -192,55 +196,53 @@ class PrimerAnalyser:
 
 
 class BatchSummary:
-    """
-    Consumes a stream of SequenceResults and builds a report.
-    Retains results for downstream filtering — nothing is thrown away.
-    """
-
     def __init__(self, results: Iterator[SequenceResult]):
-        self._results: list[SequenceResult] = list(results)
+        self._stream = results
+        self._cache: list[SequenceResult] | None = None
+
+    def _materialise(self) -> list[SequenceResult]:
+        """Consume the stream into cache. Only runs once."""
+        if self._cache is None:
+            self._cache = list(self._stream)
+        return self._cache
 
     @property
     def total(self) -> int:
-        return len(self._results)
+        return len(self._materialise())
 
     @property
     def full_pass(self) -> list[SequenceResult]:
-        return [r for r in self._results if r.full_pass]
+        return [r for r in self._materialise() if r.full_pass]
 
     @property
     def forward_only(self) -> list[SequenceResult]:
-        return [r for r in self._results if r.forward.verdict and not r.reverse.verdict]
+        return [r for r in self._materialise() if r.forward.verdict and not r.reverse.verdict]
 
     @property
     def reverse_only(self) -> list[SequenceResult]:
-        return [r for r in self._results if r.reverse.verdict and not r.forward.verdict]
+        return [r for r in self._materialise() if r.reverse.verdict and not r.forward.verdict]
 
     @property
     def no_pass(self) -> list[SequenceResult]:
-        return [r for r in self._results if not r.partial_pass]
+        return [r for r in self._materialise() if not r.partial_pass]
 
-    def filter(
-        self,
-        require_forward: bool = False,
-        require_reverse: bool = False,
-        require_both: bool = False,
-    ) -> list[SequenceResult]:
-        """Flexible filter for downstream pipeline steps."""
+    @property
+    def results(self) -> list[SequenceResult]:
+        return self._materialise()
+
+    def filter(self, require_forward=False, require_reverse=False, require_both=False):
         return [
             r
-            for r in self._results
+            for r in self._materialise()
             if (not require_forward or r.forward.verdict)
             and (not require_reverse or r.reverse.verdict)
             and (not require_both or r.full_pass)
         ]
 
     def get_sequences(self, results: list[SequenceResult]) -> list[str]:
-        """Extract source sequences from a filtered result list."""
         return [r.source_sequence for r in results]
 
     def get_ids(self, results: list[SequenceResult]) -> list[str]:
-        """Extract source IDs from a filtered result list."""
         return [r.source_id for r in results]
 
     def __repr__(self):

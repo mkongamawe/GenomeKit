@@ -84,3 +84,4 @@ dmypy.json
 goals.md
 review.md
 implementation.md
+.private/

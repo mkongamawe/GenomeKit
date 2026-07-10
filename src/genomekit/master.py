@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from genomekit.modules.gc_calculator import GCCalculator
+from genomekit.modules.gc_calculator import GCBatchSummary, GCCalculator, GCResult
 from genomekit.modules.primer_finder import (
     BatchSummary,
     MeltTempMethod,
@@ -202,20 +202,50 @@ class GenomeKit:
         stream = analyser.analyse_batch(self._sequences, ids=self._ids)
         return BatchSummary(stream)
 
-    def gc_content(self) -> dict[str, float]:
+    def gc_content(self, high_gc_threshold: int = 60) -> GCResult:
         """
         Return GC statistics for the sequence.
 
         Available in single mode only.
 
+        Args:
+            high_gc_threshold: The user's threshold for high GC content
+
         Returns:
-            A dictionary of GC statistics from GCCalculator.
+            A GCResult that contains: gc_content, whether that passes a desired threshold,
+            at_content and gc_ratio
 
         Raises:
             RuntimeError: If called on a batch-mode instance.
         """
         self._require_mode("single", "gc_content")
-        return GCCalculator(self.sequence).analyze()
+
+        analyser = GCCalculator(high_gc_threshold=high_gc_threshold)
+
+        return analyser.analyse(self.sequence, source_id="single")
+
+    def gc_content_batch(self, high_gc_content: int = 60) -> GCBatchSummary:
+        """
+        Run a GC content analysis across a batch of sequences
+
+        A GCBatchSummary report is created that lazy loads the results when filters
+        are accessed e.g. sequences, ids
+
+        Args:
+            high_gc_content: The user's threshold for high GC content
+
+        Returns:
+            A GCBatchSummary report that contains: Total sequences and those with `high GC`
+
+        Raises:
+            RuntimeError: If called on single_mode instance
+        """
+        self._require_mode("batch", "gc_content")
+
+        analyser = GCCalculator(high_gc_threshold=high_gc_content)
+
+        stream = analyser.analyse_batch(self._sequences, ids=self._ids)
+        return GCBatchSummary(stream)
 
     # ------------------------------------------------------------------
     # Dunder methods
